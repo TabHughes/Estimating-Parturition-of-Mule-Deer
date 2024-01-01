@@ -22,7 +22,6 @@ resultsN = list()
 #####Establish parameter thresholds#######
 #parameters may be adjusted according to the average steplength, velocity, turning angle, and home range size exhibited immediately after parturition by a training population#
 k = 36
-steps = 100
 velocity = 0.05
 turning = 1.8
 rMCP = 30
@@ -62,9 +61,6 @@ for(i in DeerID){
   MDreg=d[d$dt==7200,]
   row.names(MDreg)<-NULL
   MDreg <- na.omit(MDreg)
-  
-    #######calc rolling step-length#######
-    MDreg$mm=runmean(MDreg$dist, k=k, align="left")
     
     #######calc rolling Velocity#########
     MDreg$dist = MDreg$dist / 1000
@@ -102,8 +98,7 @@ for(i in DeerID){
     MDreg = tail(MDreg, -k)
     MDreg = head(MDreg, -k)
     library(dplyr)
-    a = filter(MDreg, MDreg$mm <steps)
-    a = filter(a, a$RV < velocity)
+    a = filter(MDreg, MDreg$RV < velocity)
     a = filter(a, a$turnangle > turning)
     a = filter(a, a$MCP < rMCP)
     b = a$date[1]
