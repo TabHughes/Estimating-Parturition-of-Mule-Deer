@@ -1,0 +1,70 @@
+#Behavioral change point analysis
+
+## "Evaluating alternate methods for estimating the timing of parturition in mule deer"
+## By Tabitha A. Hughes, Randy T. Larsen, Kent R. Hersey, Madelon van de Kerk, and Brock R. McMillan##
+
+## The following code is adapted from a method described by:
+# Kerry L. Nicholson, Matthew J. Warren, Camille Rostan, Johan Mansson, Thomas F. Paragi, and Hakan Sand
+# Using fine-scale movement patterns to infer ungulate parturition
+# Ecological Indicators. DOI: 10.1016/j.ecolind.2019.01.004.
+
+##########load packages##################
+library(bcpa)
+library(tidyverse)
+library(sp)
+library(rgdal)
+
+#####read in data and prepare for a loop##########
+Deer = read.csv("MD_ExampleData.csv", header = T)
+MDlist = split(Deer, Deer$uniqueID)
+DeerID = as.character(unique(Deer$uniqueID))
+results = list()
+
+########################Loop code through each individual################################
+####################################################################
+for(i in DeerID){
+  tryCatch({
+  data = MDlist[[i]]
+  #change lat/long to UTM coordinates:
+  LongLatToUTM<-function(x,y,zone){
+    xy <- data.frame(ID = 1:length(x), X = x, Y = y)
+    coordinates(xy) <- c("X", "Y")
+    proj4string(xy) <- CRS("+proj=longlat +datum=WGS84")
+    res <- spTransform(xy, CRS(paste("+proj=utm +zone=",zone," ellps=WGS84",sep='')))
+    return(as.data.frame(res))
+  }
+  UTM=LongLatToUTM(data$longitude, data$latitude,12)
+  data$X=UTM$X
+  data$Y=UTM$Y
+  #format the date into a format r can use:
+  #make sure that the date format matches that of your data
+  z= as.POSIXct(strptime(data$DateTime,format="%m/%d/%Y %H:%M"))
+  data$z=z
+  #sort by date:
+  data = data[order(data$uniqueID, z),]
+  
+  #there could be duplicates, so remove those if present with the code below:
+  data$unique=paste(data$uniqueID, data$z, sep=" ")
+  data=data[order(data$unique),]
+  data=data[!duplicated(data$unique),]
+  
+  ###Create a track###
+  X <- as.numeric(data$latitude)
+  Y <- as.numeric(data$longitude)
+  Time <- as.POSIXct(strptime(data$DateTime,format="%m/%d/%Y %H:%M"))
+  mytrack <- MakeTrack(X,Y,Time)
+  ###obtain step lengths and turning angles###
+  Deer_VT <- GetVT(mytrack)
+  ###obtain changepoint and set parameters###
+  Deer_ws <- WindowSweep(Deer_VT, "V*cos(Phi)", windowsize=60, progress=FALSE, K=0.5)
+  par(mfrow=c(1,1))
+  #make some cool plots#
+  plot(Deer_ws, type="flat", clusterwidth=36)
+  #summary of changepoints#
+  ChangePointSummary(Deer_ws, clusterwidth = 36)
+  dates = ChangePointSummary(Deer_ws, clusterwidth = 36)
+  #saving first changepoint in a separate dataframe#
+  results[[i]]= dates$breaks[1,5]
+  }, error=function(e){cat("ERROR :", conditionMessage(e), "\n")})#if no changepoint is identified, an error is returned
+}
+
