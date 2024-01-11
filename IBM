@@ -1,0 +1,209 @@
+#Individual-based method
+
+## "Evaluating alternate methods for estimating the timing of parturition in mule deer"
+## By Tabitha A. Hughes, Randy T. Larsen, Kent R. Hersey, Madelon van de Kerk, and Brock R. McMillan##
+
+## The following code is modified from code originally provided by:
+#Matthew D. Cameron, Kyle Joly, Greg A. Breed, Lincoln S. Parrett, and Knut Kielland
+# "Movement-based methods used to infer parturition events for migratory ungulates"
+# Canadian Journal of Zoology. DOI: 10.1139/cjz-2017-0314
+
+#which was adapted from a novel method described by:
+# Craig A. DeMars, Marie Auger-Methe, Ulrike E. Schlagel, and Stan Boutin
+# Inferring parturition and neonate survival from movement patterns of female ungulates: a case study using woodland caribou
+# Ecological Indicators. DOI: 10.1016/j.ecolind.2019.01.004.
+
+#if you use this code, please cite the above two papers
+
+#Load required packages#
+library(lubridate)
+library(ggplot2)
+library(caTools)
+library(sp)
+library(rgdal)
+
+run.IBM <- function(database, min.adult, max.adult, int, draw=T) {
+  devtools::source_url("https://raw.githubusercontent.com/TabHughes/Estimating-Parturition-of-Mule-Deer/main/IBM_Function")  # from Github, Load the code for the IBM from DeMars et al. 2013 paper.
+  
+  for(i in 2:length(database)){
+    print(names(database)[[i]]) #Print ID
+    id=names(database)[[i]] #saves animal ID for graph titles
+    num.missed.fix=sum(is.na(database[[i]])) #How many missed fixes for that animal
+    fix.time=database$LocalFixTime 
+    step.length=database[,i]   
+    step.num=as.vector(1:length(database[,1]))  ##How many fixes
+    bou.df=data.frame(fix.time,step.length,step.num)  
+    ## We set up the above dataframe in order to prepare data for 
+    # analysis by moving null values to fix.time as described in DeMars et al. 2013
+    
+    hold=is.na(bou.df$step.length)
+    bou.df$fix.time[hold]=NA
+    bou.df$step.num[hold]=NA
+    SL=bou.df$step.length[!is.na(bou.df$step.length)]
+    ti=bou.df$step.num[!is.na(bou.df$step.num)]
+    tp=bou.df$fix.time
+    int=int  #The numbers of steps before calving is a possibility
+    kcons=as.vector(c(min.adult,max.adult)) #Min and Max time (in steps) a calf can reach travel maturity 
+    
+    results=mnll3M(SL, ti, tp, int, kcons)
+    print(results)
+    print(paste("#################################################################"))
+    
+    year.hold=year(tp) # makes vector of year for all fixes
+    yr=year.hold[!is.na(year.hold)][1] # Saves the year being analyzed for graph titles
+    
+    ###### Saving results from IBM as csv ####
+    AICS=data.frame(id,
+                    results$resCA[1,8],
+                    as.numeric(results$resCA[1,5]),
+                    as.numeric(results$resCA[1,6]),
+                    as.numeric(results$resCA[1,7]),
+                    as.POSIXct(results$BPs[1,1]),
+                    as.POSIXct(results$BPs[1,2]),
+                    as.POSIXct(results$BPs[1,3]),
+                    num.missed.fix,
+                    yr)
+    write.table(AICS,"IBM output.csv",sep=",",
+                col.names=FALSE, row.names = FALSE,append=TRUE)
+    
+    
+    ####### Making plots of results ##########
+    if(draw==T){
+      if (results$resCA[1,8]==0) {   #if the best model is the "didn't calve model", plot a flat line
+        
+        no.calf.plot <- ggplot(database,aes(LocalFixTime,database[,i],group=1)) +
+          geom_line() +
+          theme(panel.background=element_blank()) +  #Sets background to white
+          geom_hline(yintercept=results$mpar[1,1],colour="dark grey") +
+          labs(x="Date",y="Step length (m/2hr)",title=paste("No parturition model for",id,"in ",yr)) +
+          theme(axis.line.x=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+          theme(axis.line.y=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+          theme(plot.title=element_text(size=20,face="bold",margin = margin(10,0,10,0))) +
+          ylim(c(0,2000))
+        
+        ggsave(filename=paste(id," plot for ",yr," no calving.jpeg",sep=""),plot=no.calf.plot,width = 8,height = 4)
+      }
+      
+      
+      if (results$resCA[1,8]==1){   #if the best model is the "calved model", plot a single break point
+        ## Settings for line commands ##
+        calve=as.POSIXct(results$BPs[1,1])
+        k1=as.numeric(results$mpar[1,4])
+        b1=as.numeric(results$mpar[1,2])
+        maturity.steps=as.numeric(results$BPs[4]+k1)
+        maturity.date=database[maturity.steps,1]
+        last=database[max(ti),1]
+        
+        ## Plotting ##
+        calved.plot = ggplot(database,aes(LocalFixTime,database[,i],group=1)) +
+          geom_line() +
+          theme(panel.background=element_blank()) +  #Sets background to white
+          geom_vline(xintercept=as.numeric(calve),linetype=4,colour="black") + #break point at calving event
+          geom_text(aes(x=(calve+ddays(1)),label=calve,y=10000),angle=90,size=4,fontface="italic") + #Labels the calving line with calving date
+          geom_segment(x=0,y=b1,xend=as.numeric(calve),yend=b1,colour="dark gray") + ##plots mean movement rate before calving event
+          geom_segment(x=as.numeric(calve),y=(b1/k1),xend=as.numeric(maturity.date),yend=b1,colour="dark grey") + #plots increasing calving movement rate
+          geom_segment(x=as.numeric(maturity.date),y=b1,xend=as.numeric(last),yend=b1,colour="dark grey") + #plots mature motion rates
+          labs(x="Date",y="Step length (m/2hr)",title=paste("Parturition model for",id,"in",yr,sep = " " )) +
+          theme(axis.line.x=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+          theme(axis.line.y=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+          theme(plot.title=element_text(size=20,face="bold",margin = margin(10,0,10,0))) +
+          ylim(c(0,2000))
+        
+        ggsave(filename=paste(id," plot for ",yr," Calved.jpeg",sep=""),plot=calved.plot,width = 8,height = 4)
+      }
+      
+      
+      if (results$resCA[1,8]==2){  #if the best model is the "calved then calf lost" model, plot 2 breakpoints
+        ## Settings for line commands ##
+        calve=as.POSIXct(results$BPs[1,2])
+        calf.loss=as.POSIXct(results$BPs[1,3])
+        k2=round(results$mpar[1,5])
+        b2=round(results$mpar[1,3])
+        last=database[max(ti),1]
+        ## Plotting ##
+        calf.mort.plot <- ggplot(database,aes(LocalFixTime,database[,i],group=1)) +
+          geom_line() +
+          theme(panel.background=element_blank()) +  #Sets background to white
+          geom_vline(xintercept=as.numeric(calve),linetype=4,colour="black") + #break point at calving event
+          geom_text(aes(x=(calve+ddays(1)),label=calve,y=10000),angle=90,size=4,fontface="italic") + #Labels calving event
+          geom_vline(xintercept=as.numeric(calf.loss),linetype=4,colour="black") + #break point at calf loss event
+          geom_text(aes(x=(calf.loss-ddays(1)),label=calf.loss,y=10000),angle=90,size=4,fontface="italic") + #Labels calf loss
+          geom_segment(x=0,y=b2,xend=as.numeric(calve),yend=b2,colour="dark gray") + ##plots mean movement rate before calving event
+          geom_segment(x=as.numeric(calve),y=(b2/k2),xend=as.numeric(calf.loss),yend=b2,colour="dark grey") + #plots increasing calving movement rate
+          geom_segment(x=as.numeric(calf.loss),y=b2,xend=as.numeric(last),yend=b2,colour="dark grey") + #plots mature motion rates
+          labs(x="Date",y="Step length (m/2hr)",title=paste("Fawn mortality model for",id,"in",yr,sep = " " )) +
+          theme(axis.line.x=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+          theme(axis.line.y=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+          theme(plot.title=element_text(size=20,face="bold",margin = margin(10,0,10,0))) +
+          ylim(c(0,2000))
+        
+        ggsave(filename=paste(id," plot for ",yr," Calf loss.jpeg",sep=""),plot=calf.mort.plot,width = 8,height = 4)
+      } # End last if statement
+    } # End draw == T if
+  } # End for loop for each individual in database
+} # End function
+
+############################################################################## 
+########################### Run the function for your data #########################
+############################################################################## 
+
+
+#Now, prepare your data. Right now, I am unable to do bursts, so you
+#will have to do each individual one at a time
+
+MD=read.csv("MD_ExampleData.csv", stringsAsFactors=FALSE)
+
+####Use adhabitat to filter out points and find step lengths
+LongLatToUTM<-function(x,y,zone){
+  xy <- data.frame(ID = 1:length(x), X = x, Y = y)
+  coordinates(xy) <- c("X", "Y")
+  proj4string(xy) <- CRS("+proj=longlat +datum=WGS84")
+  res <- spTransform(xy, CRS(paste("+proj=utm +zone=",zone," ellps=WGS84",sep='')))
+  return(as.data.frame(res))
+}
+
+UTM=LongLatToUTM(MD$longitude, MD$latitude,12)
+MD$X=UTM$X
+
+MD$Y=UTM$Y
+
+#format the date into a format r can use:
+#make sure that the date format matches that of your data
+z= as.POSIXct(strptime(MD$DateTime,format="%m/%d/%Y %H:%M"))
+MD$z=z
+
+#sort by individual, then by date:
+MD=MD[order(MD$uniqueID, z),]
+
+#select one individual:
+IND=MD[MD$uniqueID=="54027",]
+
+#create trajectories:#
+library(adehabitatLT)
+MDt <- as.ltraj(xy = IND[,c("X","Y")], date = IND$z, id = IND$uniqueID)
+MDt
+
+#unpack into dataframe:
+MDd=ld(MDt)
+
+### The following code ensures only data within a two hour interval is included
+MDd$hour <- as.integer(format(MDd$date, "%H"))
+MDd$minute <- as.integer(format(MDd$date, "%M"))
+
+MDreg <- MDd %>%
+  filter(minute == 0)
+condition <- ifelse(MDreg$dt != 7200 & MDreg$hour %% 2 != 0, TRUE, FALSE)
+# Use the filter function to remove rows based on the condition
+MDreg <- MDreg %>%
+  filter(!condition)
+row.names(MDreg)<-NULL
+
+#now create a new dataframe with just the date and Dist
+MD_New = data.frame(MDreg$date, MDreg$dist)
+#change column names#
+colnames(MD_New)=c("LocalFixTime", "54027")
+#format date#
+MD_New$LocalFixTime=ymd_hms(MD_New$LocalFixTime,tz="US/Mountain")
+#run code; int is # of locations before and after a breakpoint could be assigned
+#min.adult = minumum  of steps it takes to return to pre-partruent movements
+run.IBM(MD_New, min.adult = 42, max.adult = 168, int = 24, draw = T)
