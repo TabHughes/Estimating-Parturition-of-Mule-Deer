@@ -1,0 +1,90 @@
+#Peterson method
+
+## "Evaluating alternate methods for estimating the timing of parturition in mule deer"
+## By Tabitha A. Hughes, Randy T. Larsen, Kent R. Hersey, Madelon van de Kerk, and Brock R. McMillan##
+
+## The following code is adapted from a novel method described by:
+# Mark E. Peterson, Charles R. Anderson, Jr, Mathew W. Allredge, and Paul F. Doherty, Jr.
+# Using maternal mule deer movements to estimate timing of parturition and assist fawn captures
+# Wildlife Society Bulletin. DOI: 10.1002/wsb.935.
+
+
+#########load packages#########
+library(caTools)
+library(adehabitatLT)
+library(dplyr)
+
+#####read in data and prepare for a loop##########
+D = read.csv("MD_ExampleData.csv", header = T)
+MDlist = split(D, D$uniqueID)
+DeerID = as.character(unique(D$uniqueID))
+results = list()
+
+##############################Loop through each individual in dataset###########################
+##################################################################
+for(i in DeerID){
+  tryCatch({
+  Deer = MDlist[[i]]
+#change lat/long to UTM coordinates:
+library(sp)
+library(rgdal)
+LongLatToUTM<-function(x,y,zone){
+  xy <- data.frame(ID = 1:length(x), X = x, Y = y)
+  coordinates(xy) <- c("X", "Y")
+  proj4string(xy) <- CRS("+proj=longlat +datum=WGS84")
+  res <- spTransform(xy, CRS(paste("+proj=utm +zone=",zone," ellps=WGS84",sep='')))
+  return(as.data.frame(res))
+}
+UTM=LongLatToUTM(Deer$longitude, Deer$latitude,12)
+Deer$X=UTM$X
+Deer$Y=UTM$Y
+#format the date into a format r can use:
+#make sure that the date format matches that of your data
+z= as.POSIXct(strptime(Deer$DateTime,format="%m/%d/%Y %H:%M"))
+Deer$z=z
+#sort by date:
+Deer = Deer[order(Deer$uniqueID, z),]
+#there could be duplicates, so remove those if present with the code below:
+Deer$unique=paste(Deer$uniqueID, Deer$z, sep=" ")
+Deer=Deer[order(Deer$unique),]
+Deer=Deer[!duplicated(Deer$unique),]
+#create trajectories:#
+t <- as.ltraj(xy = Deer[,c("X","Y")], date = Deer$z, id = Deer$uniqueID)
+#unpack into dataframe:
+d=ld(t)   
+### The folloing code ensures only data within a two hour interval is included
+d$hour <- as.integer(format(d$date, "%H"))
+d$minute <- as.integer(format(d$date, "%M"))
+
+MDreg <- d %>%
+  filter(minute == 0)
+condition <- ifelse(MDreg$dt != 7200 & MDreg$hour %% 2 != 0, TRUE, FALSE)
+# Use the filter function to remove rows based on the condition
+MDreg <- MDreg %>%
+  filter(!condition)
+row.names(MDreg)<-NULL
+
+#####Calc movement rate in Km/hr########
+MDreg$dist = MDreg$dist / 1000
+MDreg$dt = MDreg$dt / 3600
+MDreg$V = MDreg$dist/MDreg$dt
+
+#### calculate average movement rate per day######
+MDreg$Day = strftime(MDreg$date, format = "%j")
+by(MDreg$V, MDreg$Day, mean)
+MDNew = as.data.frame.table(by(MDreg$V, MDreg$Day, mean))
+
+#####Check if movement decrease occurred####
+MDNew$Change = NA
+MDNew$Change[2:nrow(MDNew)] = ((MDNew$Freq[2:nrow(MDNew)]) - (MDNew$Freq[2:nrow(MDNew)-1]))/(MDNew$Freq[2:nrow(MDNew)-1])*100
+
+#######calc rolling mean###########
+MDNew$mean=runmean(MDNew$Freq, k=3, align="left") #k refers to the number of days low movement rates must persist following parturition
+a = filter(MDNew, MDNew$Change <= -46) #movement change threshold
+a = filter(MDNew, MDNew$mean < 0.04) #velocity threshold
+a$date = format(a$date, "%j")
+results[[i]] = as.character(a[1,1])
+}, error=function(e){cat("ERROR :", conditionMessage(e), "\n")}) #when an parturition event is not found, error is returned
+}
+
+
