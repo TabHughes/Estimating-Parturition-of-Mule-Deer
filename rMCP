@@ -1,0 +1,99 @@
+#Rolling Minimum Convex Polygons (rMCP)
+
+## "Evaluating alternate methods for estimating the timing of parturition in mule deer"
+## By Tabitha A. Hughes, Randy T. Larsen, Kent R. Hersey, Madelon van de Kerk, and Brock R. McMillan##
+
+## The following code is adapted from a novel method described by:
+# Kerry L. Nicholson, Matthew J. Warren, Camille Rostan, Johan Mansson, Thomas F. Paragi, and Hakan Sand
+# Using fine-scale movement patterns to infer ungulate parturition
+# Ecological Indicators. DOI: 10.1016/j.ecolind.2019.01.004.
+
+#########load required packages#########
+library(caTools)
+library(adehabitatHR)
+library(runner)
+library(sp)
+library(rgdal)
+
+#####read in data and prepare for a loop##########
+DeerM = read.csv("MD_ExampleData.csv", header = T)
+MDlist = split(DeerM, DeerM$uniqueID)
+DeerID = as.character(unique(DeerM$uniqueID))
+results = list()
+
+#################Loop rMCP code through each individual in the dataset##############
+for(i in DeerID){
+  data = MDlist[[i]]
+  #change lat/long to UTM coordinates:
+  LongLatToUTM<-function(x,y,zone){
+    xy <- data.frame(ID = 1:length(x), X = x, Y = y)
+    coordinates(xy) <- c("X", "Y")
+    proj4string(xy) <- CRS("+proj=longlat +datum=WGS84")
+    res <- spTransform(xy, CRS(paste("+proj=utm +zone=",zone," ellps=WGS84",sep='')))
+    return(as.data.frame(res))
+  }
+  UTM=LongLatToUTM(data$longitude, data$latitude,12)
+  data$X=UTM$X
+  data$Y=UTM$Y
+  #format the date into a format r can use:
+  #make sure that the date format matches that of your data
+  z= as.POSIXct(strptime(data$DateTime,format="%m/%d/%Y %H:%M"))
+  data$z=z
+  #sort by date:
+  Deer = data[order(data$uniqueID, z),]
+  #there could be duplicates, so remove those if present with the code below:
+  Deer$unique=paste(Deer$uniqueID, Deer$z, sep=" ")
+  Deer=Deer[order(Deer$unique),]
+  Deer=Deer[!duplicated(Deer$unique),]
+  #create trajectories:#
+  library(adehabitatLT)
+  Deert <- as.ltraj(xy = Deer[,c("X","Y")], date = Deer$z, id = Deer$uniqueID)
+  #unpack into dataframe:
+  d=ld(Deert)
+  ### The folloing code ensures only data within a two hour interval is included
+  d$hour <- as.integer(format(d$date, "%H"))
+  d$minute <- as.integer(format(d$date, "%M"))
+  
+  MDreg <- d %>%
+    filter(minute == 0)
+  condition <- ifelse(MDreg$dt != 7200 & MDreg$hour %% 2 != 0, TRUE, FALSE)
+  # Use the filter function to remove rows based on the condition
+  MDreg <- MDreg %>%
+    filter(!condition)
+  
+  row.names(MDreg)<-NULL
+  
+  #####cal rolling MCPs#########
+  rMCP = runner(
+    x = MDreg,
+    k = 24,#define window size 
+    f <- function(x){
+      x[!is.na(x$x) & !is.na(x$y),]
+      x[, c("id", "x", "y")]
+      coordinates(x) <- c("x", "y")
+      proj4string(x) <- CRS( "+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs")
+      mcp.area(x, percent = 95)
+    }, na_pad = TRUE
+  ) 
+  MDreg$rMCP = NA
+  MDreg$rMCP = matrix(unlist(rMCP), nrow = length(rMCP), byrow = TRUE)
+  
+  #######calc mean rMCP#######
+  MDreg$mm=runmean(MDreg$rMCP, k=48, align="left") #set window for mean rMCPs
+  #remove buffers
+  MDreg = tail(MDreg, -24)
+  MDreg = head(MDreg, -24)
+  library(dplyr)
+  a = filter(MDreg, MDreg$mm < 10)#set mean rMCP threshold for parturition
+  a$date = format(a$date, "%j")
+  b = as.numeric(a[1,3])
+  if(is.na(b)){
+    results[[i]] = "Not pregnant"; print(paste("Parturition status identified for", unique(Deer$uniqueID)))
+  } else {
+    results[[i]] = as.numeric(b); print(paste("Parturition date identified for", unique(Deer$uniqueID)))
+  }
+  print(b) #return julian date of parturition
+}
+
+
+
