@@ -1,0 +1,242 @@
+#Population-based method
+
+## "Evaluating alternate methods for estimating the timing of parturition in mule deer"
+## By Tabitha A. Hughes, Randy T. Larsen, Kent R. Hersey, Madelon van de Kerk, and Brock R. McMillan##
+
+## The following code is modified from code originally provided by:
+#Matthew D. Cameron, Kyle Joly, Greg A. Breed, Lincoln S. Parrett, and Knut Kielland
+# "Movement-based methods used to infer parturition events for migratory ungulates"
+# Canadian Journal of Zoology. DOI: 10.1139/cjz-2017-0314
+
+#which was adapted from a novel method described by:
+# Craig A. DeMars, Marie Auger-Methe, Ulrike E. Schlagel, and Stan Boutin
+# Inferring parturition and neonate survival from movement patterns of female ungulates: a case study using woodland caribou
+# Ecological Indicators. DOI: 10.1016/j.ecolind.2019.01.004.
+
+#if you use this code, please cite the above two papers
+
+
+#Load required packages#
+library(lubridate)
+library(ggplot2)
+library(caTools)
+library(sp)
+library(rgdal)
+library(zoo)
+#####################################################################The following code is used to generate a parturition threshold for use in the population-based, and requires movement data for animals with high confidence of calving date##############################################################################################################################
+## This is the step length data for the 3 days after the calving date
+thresh.ind <- read.csv("threshold_training_data.csv")
+### This is the function from DeMars et al 2013 to generate the PBM threshold. ##
+makeThresh <- function(moveRates, timeInt, rare=F, draw=F){
+  if (rare==T){
+    rarIndex <- apply(moveRates, 2, function(x)   quantile(x, probs=0.99, na.rm=T))
+    for (i in 1:ncol(moveRates)) moveRates[moveRates[,i] 	> rarIndex[i],i] <- NA
+  }	
+  rollAverage <- rollapply(moveRates, 3*24/timeInt, mean, na.rm=T, by.column=T)
+  rollPool <- as.vector(rollAverage)
+  rollDensity <- density(rollPool)
+  densityFun <- approxfun(rollDensity$x, rollDensity$y, yleft=0, yright=0)
+  y <- seq(1, max(rollPool)+20, 0.1)
+  rollCumu <- rep(NA, length(y))
+  for (i in 1:length(y)) rollCumu[i] <- integrate(densityFun, -Inf, y[i], stop.on.error=F)$value
+  quant <- 0.98  ## Changed from the original 0.999
+  threshold <- y[which(rollCumu >= quant)[1]]
+  if (draw==T){
+    hist(rollPool, 50, freq=F, xlim=c(0,threshold+10), xlab="TDAM mean movement rates", main="Histogram, Density and Threshold")
+    lines(rollDensity, col='red', lwd=2)
+    abline(v=threshold, lwd=2, col='blue')
+  }
+  return(threshold)	
+}
+
+###### Bootstrapping the threshold value #########################
+set.seed(1)
+thresh.bootstrapped <- data.frame(Run=1:1000,Threshold=rep(0,1000))
+for(i in 1:1000){
+  calved.sample <- sample(thresh.ind,size = 10,replace=TRUE)
+  rndm.rates <- as.matrix(calved.sample/2)
+  threshCalf <- makeThresh(rndm.rates, timeInt = 2, rare=F, draw=F) 
+  thresh.bootstrapped[i,2] <- threshCalf
+}
+den <- density(thresh.bootstrapped$Threshold,na.rm = TRUE)
+example.thresh <- den$x[den$y==max(den$y)]  ## This is the peak of the density line of the histogram
+example.thresh 
+
+hist(thresh.bootstrapped$Threshold,prob=TRUE,breaks=33,
+     main = "Bootstrapped Threshold Values", xlab = "TDAM threshold value (m/hr)", ylab= "Frequency") ## Plot the histogram
+lines(density(thresh.bootstrapped$Threshold,na.rm = TRUE))
+abline(v = example.thresh, col = "red",lwd=3)
+
+
+
+###############################################################   Once the threshold is identified, use the following code to run the PBM ########################################################### 
+
+## Modifying original code  -- The following is from DeMars et al. 2013 
+## The calf loss section has been removed (see methods section of Cameron et al paper). The following function only returns the calving date.
+getStatus <- function(movF, threshCalf){
+  meanMR <- rollapply(movF$MR, 3*24/movF$interval, mean, na.rm=T)
+  calved <- any(meanMR < threshCalf)
+  calfIndex <- which(meanMR < threshCalf)[1]  ## Note: originally 17 was added here to the first date of calving. As it is now, the first day that the TDAM rate falls below the threshold is returned as the calving date.
+  calfDate <- movF$tp[calfIndex]
+  
+  results <- data.frame(Calved = calved, CalvingDate = calfDate)
+  return(results)	
+}
+
+
+########################## 
+## Function to run the PBM analysis and save a plot of each reproductive season. Loops through columns of dataset.
+
+run.PBM <- function(database, interval, threshCalf, draw=T){ # database is the data.frame of the step lengths for each animal (as columns), interval is the 
+  # hourly time between GPS locations
+  
+  for(i in 2:length(database)){
+    tp <- database$LocalFixTime
+    id <- names(database)[[i]] #saves animal ID for graph titles
+    num.missed.fix <- sum(is.na(database[[i]])) #How many missed fixes for that animal
+    MR <- database[[i]]/2
+    movF <- data.frame(MR, tp, interval = rep(interval,length(tp))) # The repeat command here is repeating the interval, which is defined in the run command
+    result <- getStatus(movF,threshCalf)  
+    print(names(database)[[i]]) #Print ID
+    print(result)
+    print("#########################")
+    
+    ###### Saving results from PBM model as csv ####
+    year.hold=year(tp) # makes vector of year for all fixes
+    yr=year.hold[!is.na(year.hold)][1] # Saves the year being analyzed for graph titles
+    tab <- data.frame(id,
+                      result[1,1],
+                      result[1,2],
+                      num.missed.fix,
+                      yr)
+    write.table(tab,paste("PBM output.csv"),sep=",",
+                col.names=FALSE, row.names = FALSE,append=TRUE)
+    
+    ####### Generate a dataframe of the 3 day movement rates for the graph ##########
+    meanMR <- rollapply(MR, 3*24/interval, mean, na.rm=T)
+    pbm.plot <- data.frame(
+      tp[1:(length(tp)-8)],
+      meanMR)
+    colnames(pbm.plot) <- c("fix.times","MR")
+    
+    ####### Making plots of results ##########
+    
+    if (draw==T) { 
+      if (is.na(result[1,1])=="FALSE"){ # For the successful model analyses, do the following:
+        if (result[1,1]=="FALSE") {   #if the best model is the "didn't calve model", plot a flat line
+          
+          no.calf.plot <- ggplot(pbm.plot,aes(fix.times,MR,group=1)) +
+            geom_line() +
+            theme(panel.background=element_blank()) +  #Sets background to white
+            geom_hline(yintercept = threshCalf,linetype = "dashed") +
+            labs(x="Date",y="3-Day Average Moving Rate (m/hr)",title=paste("No parturition PBM model for",id,"in ",yr)) +
+            theme(axis.line.x=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+            theme(axis.line.y=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+            theme(plot.title=element_text(size=20,face="bold",margin = margin(10,0,10,0))) +
+            ylim(c(0,300))
+          
+          ggsave(filename=paste("PBM ",id," plot for ",yr," No Calving.jpeg",sep=""),plot=no.calf.plot,width = 8,height = 4)
+        } # End of ggplot False
+        
+        
+        if (result[1,1]=="TRUE"){   #if the best model is the "calved model", plot a single break point
+          ## Settings for line commands ##
+          calve=result[1,2]
+          ## Plotting ##
+          calved.plot = ggplot(pbm.plot,aes(fix.times,MR,group=1)) +
+            geom_line() +
+            theme(panel.background=element_blank()) +  #Sets background to white
+            geom_hline(yintercept = threshCalf,linetype = "dashed") +
+            labs(x="Date",y="3-Day Average Moving Rate (m/hr)",title=paste("Parturition PBM model for",id,"in",yr,sep = " " )) +
+            geom_vline(xintercept=as.numeric(calve),linetype=4,colour="black") + #break point at calving event
+            geom_text(aes(x=(calve+ddays(1)),label=calve,y=1200),angle=90,size=4,fontface="italic") + #Labels the calving line with calving date
+            theme(axis.line.x=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+            theme(axis.line.y=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+            theme(plot.title=element_text(size=20,face="bold",margin = margin(10,0,10,0))) +
+            ylim(c(0,300))
+          
+          ggsave(filename=paste("PBM ",id," plot for ",yr," Calved.jpeg",sep=""),plot=calved.plot,width = 8,height = 4)
+        } # End of ggplot True
+        
+      } # End of "if result is not NA"
+      if (is.na(result[1,1]=="TRUE")){  ## If the model CAN'T RUN:
+        null.plot <- ggplot(pbm.plot,aes(fix.times,MR,group=1)) +
+          geom_line() +
+          theme(panel.background=element_blank()) +  #Sets background to white
+          geom_hline(yintercept = threshCalf,linetype = "dashed") +
+          labs(x="Date",y="3-Day Average Moving Rate (m/hr)",title=paste("NULL PBM model for",id,"in ",yr)) +
+          theme(axis.line.x=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+          theme(axis.line.y=element_line(size=.5,colour = "black",linetype = "solid")) + #add axis lines
+          theme(plot.title=element_text(size=20,face="bold",margin = margin(10,0,10,0))) +
+          ylim(c(0,3000))
+        
+        ggsave(filename=paste("PBM ",id," plot for ",yr," NULL MODEL.jpeg",sep=""),plot=null.plot,width = 8,height = 4)
+        
+      } #End of graphing NA
+    } # End of graphing all results
+  } # End of all animals loop
+} # End of function
+
+
+
+#################FORMAT YOUR DATA########################
+## Ensure that the Date/Time column is in the right format.
+## Format: mm/dd/yy hh:mm (ex: 05/21/2014 08:00)
+## Run for example data: ###
+#Now, prepare your data. Right now, I am unable to do bursts, so you
+#will have to do each individual one at a time
+
+MD=read.csv("MD_ExampleData.csv", stringsAsFactors=FALSE)
+
+####Use adhabitat to filter out points and find step lengths
+LongLatToUTM<-function(x,y,zone){
+  xy <- data.frame(ID = 1:length(x), X = x, Y = y)
+  coordinates(xy) <- c("X", "Y")
+  proj4string(xy) <- CRS("+proj=longlat +datum=WGS84")
+  res <- spTransform(xy, CRS(paste("+proj=utm +zone=",zone," ellps=WGS84",sep='')))
+  return(as.data.frame(res))
+}
+
+UTM=LongLatToUTM(MD$longitude, MD$latitude,12)
+MD$X=UTM$X
+
+MD$Y=UTM$Y
+#format the date into a format r can use:
+#make sure that the date format matches that of your data
+z= as.POSIXct(strptime(MD$DateTime,format="%m/%d/%Y %H:%M"))
+MD$z=z
+
+#sort by individual, then by date:
+MD=MD[order(MD$uniqueID, z),]
+
+#select one individual:
+IND=MD[MD$uniqueID=="53987",]
+
+#create trajectories:#
+library(adehabitatLT)
+MDt <- as.ltraj(xy = IND[,c("X","Y")], date = IND$z, id = IND$uniqueID)
+
+#unpack into dataframe:
+MDd=ld(MDt)
+### The following code ensures only data within a two hour interval is included
+MDd$hour <- as.integer(format(MDd$date, "%H"))
+MDd$minute <- as.integer(format(MDd$date, "%M"))
+MDreg <- MDd %>%
+  filter(minute == 0)
+condition <- ifelse(MDreg$dt != 7200 & MDreg$hour %% 2 != 0, TRUE, FALSE)
+# Use the filter function to remove rows based on the condition
+MDreg <- MDreg %>%
+  filter(!condition)
+
+
+#now create a new dataframe with just the date and Dist
+MD_New = data.frame(MDreg$date, MDreg$dist)
+
+#change column names#
+colnames(MD_New)=c("LocalFixTime", "53987")
+#format date#
+MD_New$LocalFixTime=ymd_hms(MD_New$LocalFixTime,tz="US/Mountain")
+#run code; int is # of locations before and after a breakpoint could be assigned
+#min.adult = minumum  of steps it takes to return to pre-partruent movements
+#threshCalf = parturition threshold determined earlier on in the code
+run.PBM(MD_New, interval = 2, threshCalf = 57.20055, draw=T)
