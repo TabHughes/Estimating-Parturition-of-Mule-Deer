@@ -1,7 +1,9 @@
+#Analysis of Parturition Indicators (API)
+
 ##"Evaluating alternate methods for estimating the timing of parturition in mule deer"
 ##By Tabitha A. Hughes, Randy T. Larsen, Kent R. Hersey, Madelon van de Kerk, and Brock R. McMillan##
 #created 2021-04-21
-#Update 2023-10-26
+#Updated 2024-1-11
 ##If you use this code, please cite our paper##
 
 #########load required packages#########
@@ -14,14 +16,14 @@ library(dplyr)
 
 
 #####read in data and prepare to loop through each individual##########
-GPS_data = read.csv("GPSdoes_Master2.2.csv", header = T)
+GPS_data = read.csv("MD_ExampleData.csv", header = T)
 MDlist = split(GPS_data, GPS_data$uniqueID)
 DeerID = as.character(unique(GPS_data$uniqueID))
 resultsN = list()
 
 #####Establish parameter thresholds#######
-#parameters may be adjusted according to the average steplength, velocity, turning angle, and home range size exhibited immediately after parturition by a training population#
-k = 36
+#parameters may be adjusted according to the average velocity, turning angle, and home range size exhibited immediately after parturition by a training population#
+k = 36 #k refers to the window size (number of datapoints used in rolling calculations
 velocity = 0.05
 turning = 1.8
 rMCP = 30
@@ -43,7 +45,7 @@ for(i in DeerID){
   Deer$Y=UTM$Y
   #format the date into a format r can use:
   #make sure that the date format matches that of your data
-  z= as.POSIXct(strptime(Deer$dateYearAndJulian,format="%m/%d/%Y %H:%M"))
+  z= as.POSIXct(strptime(Deer$DateTime,format="%m/%d/%Y %H:%M"))
   Deer$z=z
   #sort by date:
   Deer = Deer[order(Deer$uniqueID, z),]
@@ -55,10 +57,18 @@ for(i in DeerID){
   
   #create trajectories:#
   library(adehabitatLT)
-  t <- as.ltraj(xy = Deer[,c("X","Y")], date = Deer$z, id = Deer$collarID)
+  t <- as.ltraj(xy = Deer[,c("X","Y")], date = Deer$z, id = Deer$uniqueID)
   #unpack into dataframe:
-  d=ld(t)   
-  MDreg=d[d$dt==7200,]
+  d=ld(t) 
+  ### The folloing code ensures only data within a two hour interval is included
+  d$hour <- as.integer(format(d$date, "%H"))
+  d$minute <- as.integer(format(d$date, "%M"))
+  MDreg <- d %>%
+    filter(minute == 0)
+  condition <- ifelse(MDreg$dt != 7200 & MDreg$hour %% 2 != 0, TRUE, FALSE)
+  # Use the filter function to remove rows based on the condition
+  MDreg <- MDreg %>%
+    filter(!condition)
   row.names(MDreg)<-NULL
   MDreg <- na.omit(MDreg)
     
@@ -108,7 +118,7 @@ for(i in DeerID){
     } else {
       resultsN[[i]] = as.numeric(b); print(paste("Parturition date identified for", unique(Deer$uniqueID)))
     }
-    print(b)
+    print(b) #returns julian day of parturition
 }
 
 
